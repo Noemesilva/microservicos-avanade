@@ -4,6 +4,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using RabbitMQ.Client.Events;
+using RabbitMQ.Client;
+using System.Text.Json;
+using Shared.Messages;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -40,6 +44,43 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// RabbitMQ subscriber para decrementar estoque após venda
+var rabbitFactory = new ConnectionFactory
+{
+    HostName = builder.Configuration.GetValue<string>("RabbitMQ:Host") ?? "localhost",
+    UserName = builder.Configuration.GetValue<string>("RabbitMQ:Username") ?? "guest",
+    Password = builder.Configuration.GetValue<string>("RabbitMQ:Password") ?? "guest"
+};
+var rabbitConnection = rabbitFactory.CreateConnection();
+var rabbitChannel = rabbitConnection.CreateModel();
+rabbitChannel.ExchangeDeclare(exchange: "sales", type: ExchangeType.Fanout, durable: true);
+var queue = rabbitChannel.QueueDeclare(queue: "inventory-sales", durable: true, exclusive: false, autoDelete: false);
+rabbitChannel.QueueBind(queue: queue.QueueName, exchange: "sales", routingKey: string.Empty);
+var consumer = new EventingBasicConsumer(rabbitChannel);
+consumer.Received += async (_, ea) =>
+{
+    try
+    {
+        var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+        var message = JsonSerializer.Deserialize<SaleCreated>(json);
+        if (message is null) return;
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        foreach (var item in message.Items)
+        {
+            var product = await db.Products.FindAsync(item.ProductId);
+            if (product is null) continue;
+            product.Quantity = Math.Max(0, product.Quantity - item.Quantity);
+        }
+        await db.SaveChangesAsync();
+    }
+    catch
+    {
+        // log ignorado nesta versão inicial
+    }
+};
+rabbitChannel.BasicConsume(queue: queue.QueueName, autoAck: true, consumer: consumer);
 
 app.MapGet("/api/products", async (InventoryDbContext db) =>
     await db.Products.AsNoTracking().ToListAsync())

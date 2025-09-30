@@ -5,6 +5,9 @@ using SalesService.Models;
 using System.Net.Http.Json;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using RabbitMQ.Client;
+using System.Text.Json;
+using Shared.Messages;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -52,7 +55,7 @@ app.UseAuthorization();
 public record CreateOrderItemDto(Guid ProductId, int Quantity);
 public record CreateOrderDto(List<CreateOrderItemDto> Items);
 
-app.MapPost("/api/orders", async (CreateOrderDto dto, SalesDbContext db, IHttpClientFactory httpClientFactory) =>
+app.MapPost("/api/orders", async (CreateOrderDto dto, SalesDbContext db, IHttpClientFactory httpClientFactory, IConfiguration config) =>
 {
     if (dto.Items.Count == 0) return Results.BadRequest("Pedido sem itens");
 
@@ -91,6 +94,24 @@ app.MapPost("/api/orders", async (CreateOrderDto dto, SalesDbContext db, IHttpCl
 
     db.Orders.Add(order);
     await db.SaveChangesAsync();
+
+    // Publica evento no RabbitMQ
+    var factory = new ConnectionFactory
+    {
+        HostName = config.GetValue<string>("RabbitMQ:Host") ?? "localhost",
+        UserName = config.GetValue<string>("RabbitMQ:Username") ?? "guest",
+        Password = config.GetValue<string>("RabbitMQ:Password") ?? "guest"
+    };
+    using var connection = factory.CreateConnection();
+    using var channel = connection.CreateModel();
+    channel.ExchangeDeclare(exchange: "sales", type: ExchangeType.Fanout, durable: true);
+    var message = new SaleCreated
+    {
+        OrderId = order.Id,
+        Items = dto.Items.Select(i => new SaleItem { ProductId = i.ProductId, Quantity = i.Quantity }).ToList()
+    };
+    var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
+    channel.BasicPublish(exchange: "sales", routingKey: string.Empty, basicProperties: null, body: body);
 
     return Results.Created($"/api/orders/{order.Id}", order);
 })
