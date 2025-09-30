@@ -1,42 +1,68 @@
+using InventoryService.Data;
+using InventoryService.Models;
+using Microsoft.EntityFrameworkCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddDbContext<InventoryDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("SqlServer")));
+
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+app.MapGet("/api/products", async (InventoryDbContext db) =>
+    await db.Products.AsNoTracking().ToListAsync())
+    .WithName("GetProducts")
+    .WithOpenApi();
 
-app.MapGet("/weatherforecast", () =>
+app.MapGet("/api/products/{id}", async (Guid id, InventoryDbContext db) =>
+    await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id) is Product p
+        ? Results.Ok(p)
+        : Results.NotFound())
+    .WithName("GetProductById")
+    .WithOpenApi();
+
+app.MapPost("/api/products", async (Product input, InventoryDbContext db) =>
 {
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
+    input.Id = Guid.NewGuid();
+    db.Products.Add(input);
+    await db.SaveChangesAsync();
+    return Results.Created($"/api/products/{input.Id}", input);
 })
-.WithName("GetWeatherForecast")
+.WithName("CreateProduct")
+.WithOpenApi();
+
+app.MapPut("/api/products/{id}", async (Guid id, Product update, InventoryDbContext db) =>
+{
+    var product = await db.Products.FindAsync(id);
+    if (product is null) return Results.NotFound();
+    product.Name = update.Name;
+    product.Description = update.Description;
+    product.Price = update.Price;
+    product.Quantity = update.Quantity;
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+})
+.WithName("UpdateProduct")
+.WithOpenApi();
+
+app.MapPatch("/api/products/{id}/stock/{quantity}", async (Guid id, int quantity, InventoryDbContext db) =>
+{
+    var product = await db.Products.FindAsync(id);
+    if (product is null) return Results.NotFound();
+    product.Quantity = quantity;
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+})
+.WithName("SetProductStock")
 .WithOpenApi();
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
