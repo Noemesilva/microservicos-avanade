@@ -1,7 +1,10 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using SalesService.Data;
 using SalesService.Models;
 using System.Net.Http.Json;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,6 +27,26 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// JWT
+var jwtKey = builder.Configuration["Jwt:Key"] ?? "dev";
+var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = key
+        };
+    });
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 // DTO para criação de pedido
 public record CreateOrderItemDto(Guid ProductId, int Quantity);
@@ -72,6 +95,7 @@ app.MapPost("/api/orders", async (CreateOrderDto dto, SalesDbContext db, IHttpCl
     return Results.Created($"/api/orders/{order.Id}", order);
 })
 .WithName("CreateOrder")
+.RequireAuthorization()
 .WithOpenApi();
 
 app.MapGet("/api/orders/{id}", async (Guid id, SalesDbContext db) =>
